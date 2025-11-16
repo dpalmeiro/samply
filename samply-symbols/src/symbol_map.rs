@@ -5,8 +5,8 @@ use debugid::DebugId;
 
 use crate::{
     AddressInfo, ExternalFileAddressRef, ExternalFileRef, FileAndPathHelper, FileLocation,
-    FrameDebugInfo, FramesLookupResult, LookupAddress, SourceFilePath, SourceFilePathHandle,
-    SyncAddressInfo,
+    FrameDebugInfo, FramesLookupResult, FunctionNameHandle, LookupAddress, SourceFilePath,
+    SourceFilePathHandle, SymbolNameHandle, SyncAddressInfo,
 };
 
 pub trait SymbolMapTrait {
@@ -25,6 +25,8 @@ pub trait SymbolMapTrait {
     /// file contents with a follow-up call to `try_lookup_external_with_file_contents`.
     fn lookup_sync(&self, address: LookupAddress) -> Option<SyncAddressInfo>;
 
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str>;
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str>;
     fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_>;
 
     fn set_access_pattern_hint(&self, _hint: AccessPatternHint) {}
@@ -121,22 +123,6 @@ impl<H: FileAndPathHelper> SymbolMap<H> {
         &self.debug_file_location
     }
 
-    pub fn debug_id(&self) -> debugid::DebugId {
-        self.inner().debug_id()
-    }
-
-    pub fn symbol_count(&self) -> usize {
-        self.inner().symbol_count()
-    }
-
-    pub fn iter_symbols(&self) -> Box<dyn Iterator<Item = (u32, Cow<'_, str>)> + '_> {
-        self.inner().iter_symbols()
-    }
-
-    pub fn lookup_sync(&self, address: LookupAddress) -> Option<SyncAddressInfo> {
-        self.inner().lookup_sync(address)
-    }
-
     pub async fn lookup(&self, address: LookupAddress) -> Option<AddressInfo> {
         let address_info = self.inner().lookup_sync(address)?;
         let symbol = address_info.symbol;
@@ -231,11 +217,69 @@ impl<H: FileAndPathHelper> SymbolMap<H> {
         }
     }
 
+    pub fn debug_id(&self) -> debugid::DebugId {
+        self.inner().debug_id()
+    }
+
+    pub fn symbol_count(&self) -> usize {
+        self.inner().symbol_count()
+    }
+
+    pub fn iter_symbols(&self) -> Box<dyn Iterator<Item = (u32, Cow<'_, str>)> + '_> {
+        self.inner().iter_symbols()
+    }
+
+    pub fn lookup_sync(&self, address: LookupAddress) -> Option<SyncAddressInfo> {
+        self.inner().lookup_sync(address)
+    }
+
+    pub fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        self.inner().resolve_function_name(handle)
+    }
+
+    pub fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        self.inner().resolve_symbol_name(handle)
+    }
+
     pub fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {
         self.inner().resolve_source_file_path(handle)
     }
 
     pub fn set_access_pattern_hint(&self, hint: AccessPatternHint) {
         self.inner().set_access_pattern_hint(hint);
+    }
+}
+
+impl<H: FileAndPathHelper> SymbolMapTrait for SymbolMap<H> {
+    fn debug_id(&self) -> debugid::DebugId {
+        self.debug_id()
+    }
+
+    fn symbol_count(&self) -> usize {
+        self.symbol_count()
+    }
+
+    fn iter_symbols(&self) -> Box<dyn Iterator<Item = (u32, Cow<'_, str>)> + '_> {
+        self.iter_symbols()
+    }
+
+    fn lookup_sync(&self, address: LookupAddress) -> Option<SyncAddressInfo> {
+        self.lookup_sync(address)
+    }
+
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        self.resolve_function_name(handle)
+    }
+
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        self.resolve_symbol_name(handle)
+    }
+
+    fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {
+        self.resolve_source_file_path(handle)
+    }
+
+    fn set_access_pattern_hint(&self, hint: AccessPatternHint) {
+        self.set_access_pattern_hint(hint);
     }
 }

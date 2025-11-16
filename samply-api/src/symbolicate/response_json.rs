@@ -2,99 +2,108 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use samply_symbols::{FileAndPathHelper, FrameDebugInfo, SymbolMap};
+use samply_symbols::{FileAndPathHelper, FrameDebugInfo, SymbolMap, SymbolMapTrait};
 use serde::ser::{SerializeMap, SerializeSeq};
 
 use super::request_json::{Job, Lib, RequestFrame, RequestStack};
 use crate::api_file_path::to_api_file_path;
-use crate::symbolicate::looked_up_addresses::{AddressResults, PathResolver};
+use crate::symbolicate::looked_up_addresses::AddressResults;
 use crate::symbolicate::request_json::Request;
 
-pub struct PerLibResult<H: FileAndPathHelper> {
+pub struct LibSymbols<H: FileAndPathHelper> {
     pub address_results: AddressResults,
     pub symbol_map: Arc<SymbolMap<H>>,
 }
 
+/// The response for a [`Request`].
+///
+/// Note: You may be tempted to eliminate the type parameter `H` here. But beware!
+/// Response is Send if and only if H is Send. You'd need to pick either Send or
+/// non-Send if you wanted to type-erase H. But we need to support both cases:
+/// - In samply's server, we call wholesym::SymbolManager::query_api(...).await
+///   in an async function whose Future must be Send. Making Response non-Send would
+///   turn that entire future non-Send.
+/// - In profiler-get-symbols, H is non-Send, so we cannot require H: Send here.
+///
+/// Actually, that last bit may not be true. Maybe SymbolMap<H> is always Send these
+/// days? Maybe this deserves another look.
 pub struct Response<H: FileAndPathHelper> {
     pub request: Request,
-    pub per_lib_results: HashMap<Lib, std::result::Result<PerLibResult<H>, samply_symbols::Error>>,
+    pub symbols_per_lib: HashMap<Lib, Result<LibSymbols<H>, samply_symbols::Error>>,
 }
 
 impl<H: FileAndPathHelper> serde::Serialize for Response<H> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let request = &self.request;
-        let per_lib_results: HashMap<_, _> = self
-            .per_lib_results
+        let symbols_per_lib: HashMap<_, _> = self
+            .symbols_per_lib
             .iter()
             .map(|(lib, lr)| {
                 let lr_ref = match lr {
-                    Ok(lr) => PerLibResultRef {
-                        address_results: Ok(&lr.address_results),
-                        path_resolver: &*lr.symbol_map,
-                    },
-                    Err(e) => PerLibResultRef {
-                        address_results: Err(e),
-                        path_resolver: &(),
-                    },
+                    Ok(lr) => Ok(LibSymbolsRef {
+                        address_results: &lr.address_results,
+                        symbol_map: &*lr.symbol_map,
+                    }),
+                    Err(e) => Err(e),
                 };
                 (lib, lr_ref)
             })
             .collect();
-        let per_lib_results = &per_lib_results;
+        let symbols_per_lib = &symbols_per_lib;
 
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry(
             "results",
             &ResponseResults {
                 request,
-                per_lib_results,
+                symbols_per_lib,
             },
         )?;
         map.end()
     }
 }
 
-pub struct PerLibResultRef<'a> {
-    pub address_results: std::result::Result<&'a AddressResults, &'a samply_symbols::Error>,
-    pub path_resolver: &'a dyn PathResolver,
+pub struct LibSymbolsRef<'a> {
+    pub address_results: &'a AddressResults,
+    pub symbol_map: &'a dyn SymbolMapTrait,
 }
 
 pub struct ResponseResults<'a> {
     pub request: &'a Request,
-    pub per_lib_results: &'a HashMap<&'a Lib, PerLibResultRef<'a>>,
+    pub symbols_per_lib: &'a HashMap<&'a Lib, Result<LibSymbolsRef<'a>, &'a samply_symbols::Error>>,
 }
 
 impl<'a> serde::Serialize for ResponseResults<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let mut seq = serializer.serialize_seq(None)?;
         for job in self.request.jobs() {
-            seq.serialize_element(&Result {
+            seq.serialize_element(&JobResponse {
                 job,
-                per_lib_results: self.per_lib_results,
+                symbols_per_lib: self.symbols_per_lib,
             })?;
         }
         seq.end()
     }
 }
 
-pub struct Result<'a> {
+pub struct JobResponse<'a> {
     pub job: &'a Job,
-    pub per_lib_results: &'a HashMap<&'a Lib, PerLibResultRef<'a>>,
+    pub symbols_per_lib: &'a HashMap<&'a Lib, Result<LibSymbolsRef<'a>, &'a samply_symbols::Error>>,
 }
 
 struct PerModuleResultsRef<'a> {
     pub address_results: &'a AddressResults,
-    pub path_resolver: &'a dyn PathResolver,
+    pub symbol_map: &'a dyn SymbolMapTrait,
 }
 
-impl<'a> serde::Serialize for Result<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+impl<'a> serde::Serialize for JobResponse<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -102,13 +111,13 @@ impl<'a> serde::Serialize for Result<'a> {
         let mut module_errors = HashMap::new();
         let mut symbols_by_module_index = HashMap::new();
         for (module_index, lib) in self.job.memory_map.iter().enumerate() {
-            if let Some(per_lib_result) = self.per_lib_results.get(lib) {
+            if let Some(lib_symbols_result) = self.symbols_per_lib.get(lib) {
                 let module_key = format!("{}/{}", lib.debug_name, lib.breakpad_id);
-                match per_lib_result.address_results {
-                    Ok(address_results) => {
+                match lib_symbols_result {
+                    Ok(lib_symbols) => {
                         let module_results = PerModuleResultsRef {
-                            address_results,
-                            path_resolver: per_lib_result.path_resolver,
+                            address_results: lib_symbols.address_results,
+                            symbol_map: lib_symbols.symbol_map,
                         };
                         symbols_by_module_index.insert(module_index as u32, module_results);
                     }
@@ -116,7 +125,7 @@ impl<'a> serde::Serialize for Result<'a> {
                         module_errors.insert(module_key.clone(), vec![Error(err)]);
                     }
                 }
-                found_modules.insert(module_key, per_lib_result.address_results.is_ok());
+                found_modules.insert(module_key, lib_symbols_result.is_ok());
             }
         }
 
@@ -143,7 +152,7 @@ struct ResponseStacks<'a> {
 }
 
 impl<'a> serde::Serialize for ResponseStacks<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -166,7 +175,7 @@ pub struct ResponseStack<'a> {
 }
 
 impl<'a> serde::Serialize for ResponseStack<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -191,7 +200,7 @@ pub struct ResponseFrame<'a> {
 }
 
 impl<'a> serde::Serialize for ResponseFrame<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -212,7 +221,16 @@ impl<'a> serde::Serialize for ResponseFrame<'a> {
             let address_result = symbol_map.address_results.get(&frame.address).unwrap();
             // But the result might still be None.
             if let Some(address_result) = address_result {
-                map.serialize_entry("function", &address_result.symbol.name)?;
+                // Use the function name from debug info if available, otherwise use the symbol name
+                let function_name = address_result
+                    .function_name
+                    .map(|h| symbol_map.symbol_map.resolve_function_name(h))
+                    .unwrap_or_else(|| {
+                        symbol_map
+                            .symbol_map
+                            .resolve_symbol_name(address_result.symbol.name)
+                    });
+                map.serialize_entry("function", &function_name)?;
                 map.serialize_entry(
                     "function_offset",
                     &SerializeAsHexStr(frame.address - address_result.symbol.address),
@@ -226,7 +244,7 @@ impl<'a> serde::Serialize for ResponseFrame<'a> {
                         .split_last()
                         .expect("inline_frames should always have at least one element");
                     if let Some(file) = &outer.file_path {
-                        let file = symbol_map.path_resolver.resolve_source_file_path(*file);
+                        let file = symbol_map.symbol_map.resolve_source_file_path(*file);
                         map.serialize_entry("file", &to_api_file_path(&file))?;
                     }
                     if let Some(line) = outer.line_number.and_then(NonZeroU32::new) {
@@ -236,7 +254,7 @@ impl<'a> serde::Serialize for ResponseFrame<'a> {
                     if !inlines.is_empty() {
                         map.serialize_entry(
                             "inlines",
-                            &ResponseInlineFrames(inlines, symbol_map.path_resolver),
+                            &ResponseInlineFrames(inlines, symbol_map.symbol_map),
                         )?;
                     }
                 }
@@ -247,10 +265,10 @@ impl<'a> serde::Serialize for ResponseFrame<'a> {
     }
 }
 
-struct ResponseInlineFrames<'a>(&'a [FrameDebugInfo], &'a dyn PathResolver);
+struct ResponseInlineFrames<'a>(&'a [FrameDebugInfo], &'a dyn SymbolMapTrait);
 
 impl<'a> serde::Serialize for ResponseInlineFrames<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -262,16 +280,17 @@ impl<'a> serde::Serialize for ResponseInlineFrames<'a> {
     }
 }
 
-struct ResponseInlineFrame<'a>(&'a FrameDebugInfo, &'a dyn PathResolver);
+struct ResponseInlineFrame<'a>(&'a FrameDebugInfo, &'a dyn SymbolMapTrait);
 
 impl<'a> serde::Serialize for ResponseInlineFrame<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let mut map = serializer.serialize_map(None)?;
-        if let Some(function) = &self.0.function {
-            map.serialize_entry("function", &function)?;
+        if let Some(function) = self.0.function {
+            let function_name = self.1.resolve_function_name(function);
+            map.serialize_entry("function", &function_name)?;
         }
         if let Some(file) = &self.0.file_path {
             let file = self.1.resolve_source_file_path(*file);
@@ -287,7 +306,7 @@ impl<'a> serde::Serialize for ResponseInlineFrame<'a> {
 struct SerializeAsHexStr<T>(T);
 
 impl<T: std::fmt::LowerHex> serde::Serialize for SerializeAsHexStr<T> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -298,7 +317,7 @@ impl<T: std::fmt::LowerHex> serde::Serialize for SerializeAsHexStr<T> {
 pub struct Error<'a>(&'a samply_symbols::Error);
 
 impl<'a> serde::Serialize for Error<'a> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -312,7 +331,7 @@ impl<'a> serde::Serialize for Error<'a> {
 struct DisplayWrapper<'a, T>(&'a T);
 
 impl<T: std::fmt::Display> serde::Serialize for DisplayWrapper<'_, T> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {

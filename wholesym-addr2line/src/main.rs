@@ -198,10 +198,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         if do_functions {
-                            if let Some(func) = &frame.function {
-                                print!("{func}");
+                            if let Some(func) = frame.function {
+                                let func_name = symbol_map.resolve_function_name(func);
+                                print!("{func_name}");
                             } else if i == frames.len() - 1 {
-                                print!("{}", address_info.symbol.name);
+                                let symbol_name =
+                                    symbol_map.resolve_symbol_name(address_info.symbol.name);
+                                print!("{symbol_name}");
                             } else {
                                 print!("??");
                             }
@@ -234,7 +237,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 // Have no frames, but have a symbol.
                 if do_functions {
-                    print!("{}", address_info.symbol.name);
+                    let symbol_name = symbol_map.resolve_symbol_name(address_info.symbol.name);
+                    print!("{symbol_name}");
 
                     if pretty {
                         print!(" at ");

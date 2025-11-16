@@ -1,19 +1,12 @@
 use std::collections::BTreeMap;
 
-use samply_symbols::{FrameDebugInfo, SourceFilePath, SourceFilePathHandle, SymbolInfo};
-
-pub trait PathResolver {
-    fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_>;
-}
-
-impl PathResolver for () {
-    fn resolve_source_file_path(&self, _handle: SourceFilePathHandle) -> SourceFilePath<'_> {
-        unreachable!()
-    }
-}
+use samply_symbols::{FrameDebugInfo, FunctionNameHandle, SymbolInfo};
 
 pub struct AddressResult {
     pub symbol: SymbolInfo,
+    /// The function name from debug info, if available. This may be more
+    /// accurate than the symbol name from the symbol table.
+    pub function_name: Option<FunctionNameHandle>,
     pub inline_frames: Option<Vec<FrameDebugInfo>>,
 }
 
@@ -21,16 +14,14 @@ impl AddressResult {
     pub fn new(symbol: SymbolInfo) -> Self {
         Self {
             symbol,
+            function_name: None,
             inline_frames: None,
         }
     }
 
     pub fn set_debug_info(&mut self, frames: Vec<FrameDebugInfo>) {
-        let outer_function_name = frames.last().and_then(|f| f.function.as_ref());
-        // Overwrite the symbol name with the function name from the debug info.
-        if let Some(name) = outer_function_name {
-            self.symbol.name = name.clone();
-        }
+        // Store the outer function name from debug info if available.
+        self.function_name = frames.last().and_then(|f| f.function);
         // Add the inline frame info.
         self.inline_frames = Some(frames);
     }

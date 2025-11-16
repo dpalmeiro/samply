@@ -20,8 +20,8 @@ use crate::shared::{
     LookupAddress, SymbolInfo,
 };
 use crate::symbol_map::{GetInnerSymbolMap, SymbolMap, SymbolMapTrait};
-use crate::PathInterner;
 use crate::{FileAndPathHelper, SourceFilePath, SourceFilePathHandle, SyncAddressInfo};
+use crate::{FunctionNameHandle, SymbolMapStringInterner, SymbolNameHandle};
 
 pub fn is_jitdump_file<T: FileContents>(file_contents: &FileContentsWrapper<T>) -> bool {
     const MAGIC_BYTES_BE: &[u8] = b"JiTD";
@@ -224,7 +224,7 @@ pub struct JitDumpSymbolMapInnerWrapper<'data>(pub Box<dyn SymbolMapTrait + Send
 struct JitDumpSymbolMapCache<'a, T: FileContents> {
     names: HashMap<usize, &'a [u8]>,
     debug_infos: HashMap<usize, JitCodeDebugInfoRecord<'a>>,
-    path_interner: PathInterner<'a>,
+    string_interner: SymbolMapStringInterner<'a>,
     data: &'a FileContentsWrapper<T>,
     index: &'a JitDumpIndex,
 }
@@ -238,7 +238,7 @@ impl<'a, T: FileContents> JitDumpSymbolMapCache<'a, T> {
         Self {
             names: HashMap::new(),
             debug_infos: HashMap::new(),
-            path_interner: PathInterner::new(generation),
+            string_interner: SymbolMapStringInterner::new(generation),
             data,
             index,
         }
@@ -288,11 +288,13 @@ impl<'a, T: FileContents> JitDumpSymbolMapInner<'a, T> {
     ) -> Option<SyncAddressInfo> {
         let mut cache = self.cache.lock().unwrap();
         let name_bytes = cache.get_function_name(index)?;
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
+        let name = cache
+            .string_interner
+            .intern_cow(String::from_utf8_lossy(name_bytes));
         let symbol = SymbolInfo {
             address: symbol_address,
             size: Some(self.index.entries[index].code_bytes_len as u32),
-            name,
+            name: name.into(),
         };
         let Some(debug_info) = cache.get_debug_info(index) else {
             return Some(SyncAddressInfo {
@@ -304,13 +306,14 @@ impl<'a, T: FileContents> JitDumpSymbolMapInner<'a, T> {
         let entry = debug_info.lookup(lookup_avma)?;
         let line = entry.line;
         let file_path = match entry.file_path.as_slice() {
-            Cow::Borrowed(s) => String::from_utf8_lossy(s),
-            Cow::Owned(s) => Cow::Owned(String::from_utf8_lossy(&s).into_owned()),
+            Cow::Borrowed(s) => cache.string_interner.intern_cow(String::from_utf8_lossy(s)),
+            Cow::Owned(s) => cache
+                .string_interner
+                .intern_owned(&String::from_utf8_lossy(&s)),
         };
-        let file_path = cache.path_interner.intern_cow(file_path);
         let frame = FrameDebugInfo {
-            function: Some(symbol.name.clone()),
-            file_path: Some(file_path),
+            function: Some(name.into()),
+            file_path: Some(file_path.into()),
             line_number: Some(line),
         };
 
@@ -350,8 +353,33 @@ impl<T: FileContents> SymbolMapTrait for JitDumpSymbolMapInner<'_, T> {
         self.lookup_by_entry_index(index, symbol_address, offset_from_symbol)
     }
 
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        let s = self
+            .cache
+            .lock()
+            .unwrap()
+            .string_interner
+            .resolve(handle.into());
+        s.expect("unknown handle?")
+    }
+
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        let s = self
+            .cache
+            .lock()
+            .unwrap()
+            .string_interner
+            .resolve(handle.into());
+        s.expect("unknown handle?")
+    }
+
     fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {
-        let s = self.cache.lock().unwrap().path_interner.resolve(handle);
+        let s = self
+            .cache
+            .lock()
+            .unwrap()
+            .string_interner
+            .resolve(handle.into());
         SourceFilePath::RawPath(s.expect("unknown handle?"))
     }
 }

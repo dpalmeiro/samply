@@ -8,8 +8,8 @@ pub struct SourceFilePathIndex(pub u32);
 /// A handle for a [`SourceFilePath`]. Can be resolved with the symbol map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceFilePathHandle {
-    generation: SymbolMapGeneration,
-    index: SourceFilePathIndex,
+    pub(crate) generation: SymbolMapGeneration,
+    pub(crate) index: SourceFilePathIndex,
 }
 
 /// The path of a source file, as found in the debug info.

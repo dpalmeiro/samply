@@ -7,19 +7,20 @@ use yoke_derive::Yokeable;
 
 use super::index::{
     BreakpadFuncSymbol, BreakpadFuncSymbolInfo, BreakpadIndex, BreakpadIndexCreator,
-    BreakpadPublicSymbol, BreakpadPublicSymbolInfo, StringListRef, SYMBOL_ENTRY_KIND_FUNC,
-    SYMBOL_ENTRY_KIND_PUBLIC,
+    BreakpadPublicSymbol, SYMBOL_ENTRY_KIND_FUNC, SYMBOL_ENTRY_KIND_PUBLIC,
 };
 use crate::breakpad::index::{
     func_line, BreakpadSymbolEntry, Inlinee, OwnedBreakpadIndex, SourceLine, StringLocation,
     Tokenizer,
 };
 use crate::generation::SymbolMapGeneration;
+use crate::shared::{FunctionNameIndex, SymbolNameIndex};
 use crate::source_file_path::SourceFilePathHandle;
 use crate::symbol_map::{GetInnerSymbolMap, SymbolMapTrait};
 use crate::{
     AccessPatternHint, BreakpadParseError, Error, FileContents, FileContentsWrapper,
-    FrameDebugInfo, FramesLookupResult, LookupAddress, SourceFilePath, SymbolInfo, SyncAddressInfo,
+    FrameDebugInfo, FramesLookupResult, FunctionNameHandle, LookupAddress, SourceFilePath,
+    SymbolInfo, SymbolNameHandle, SyncAddressInfo,
 };
 
 pub fn get_symbol_map_for_breakpad_sym<FC: FileContents + 'static>(
@@ -102,7 +103,7 @@ impl<T: FileContents> BreakpadSymbolMapOuter<T> {
             }
             IndexStorage::Owned(owned_index) => owned_index.index(),
         };
-        let cache = Mutex::new(BreakpadSymbolMapCache::new(&index));
+        let cache = Mutex::new(BreakpadSymbolMapCache::new());
         let inner_impl = BreakpadSymbolMapInner {
             data: &self.data,
             index,
@@ -125,15 +126,12 @@ struct BreakpadSymbolMapInner<'a, T: FileContents> {
 
 #[derive(Debug)]
 struct BreakpadSymbolMapCache<'a> {
-    files: StringListRef<'a>,
-    inline_origins: StringListRef<'a>,
     symbols: BreakpadSymbolMapSymbolCache<'a>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct BreakpadSymbolMapSymbolCache<'a> {
     names: HashMap<u32, StringLocation>,
-    public_symbols: HashMap<u32, BreakpadPublicSymbolInfo<'a>>,
     func_symbols: HashMap<u32, BreakpadFuncSymbolInfo<'a>>,
     lines: Vec<SourceLine>,
     inlinees: Vec<Inlinee>,
@@ -141,10 +139,8 @@ struct BreakpadSymbolMapSymbolCache<'a> {
 }
 
 impl<'a> BreakpadSymbolMapCache<'a> {
-    pub fn new(index: &BreakpadIndex<'a>) -> Self {
+    pub fn new() -> Self {
         Self {
-            files: index.files,
-            inline_origins: index.inline_origins,
             symbols: BreakpadSymbolMapSymbolCache::default(),
         }
     }
@@ -175,7 +171,6 @@ impl<'a> BreakpadSymbolMapSymbolCache<'a> {
                         Error::HelperErrorDuringFileReading("Breakpad PUBLIC symbol".to_string(), e)
                     })?;
                 let info = BreakpadPublicSymbol::parse(line)?;
-                self.public_symbols.insert(entry_index, info);
                 self.names.insert(
                     entry_index,
                     StringLocation::from_refs(file_offset, line, info.name).unwrap(),
@@ -209,37 +204,8 @@ impl<'a> BreakpadSymbolMapSymbolCache<'a> {
         }
     }
 
-    pub fn get_public_info<T: FileContents>(
+    pub fn get_func_info<T: FileContents>(
         &mut self,
-        entry_index: u32,
-        entry: &BreakpadSymbolEntry,
-        data: &'a FileContentsWrapper<T>,
-    ) -> Result<BreakpadPublicSymbolInfo<'a>, Error> {
-        if let Some(info) = self.public_symbols.get(&entry_index) {
-            return Ok(*info);
-        }
-
-        self.clear_if_saving_memory();
-
-        let file_offset = entry.offset.get();
-        let line_length = entry.line_or_block_len.get();
-        let line = data
-            .read_bytes_at(file_offset, line_length.into())
-            .map_err(|e| {
-                Error::HelperErrorDuringFileReading("Breakpad PUBLIC symbol".to_string(), e)
-            })?;
-        let info = BreakpadPublicSymbol::parse(line)?;
-        self.public_symbols.insert(entry_index, info);
-        self.names.insert(
-            entry_index,
-            StringLocation::from_refs(file_offset, line, info.name).unwrap(),
-        );
-
-        Ok(info)
-    }
-
-    pub fn get_func_info<'s, T: FileContents>(
-        &'s mut self,
         entry_index: u32,
         entry: &BreakpadSymbolEntry,
         data: &'a FileContentsWrapper<T>,
@@ -268,11 +234,28 @@ impl<'a> BreakpadSymbolMapSymbolCache<'a> {
 
     fn clear_if_saving_memory(&mut self) {
         if self.only_store_latest {
-            self.public_symbols.clear();
             self.func_symbols.clear();
             self.inlinees.clear();
             self.lines.clear();
         }
+    }
+}
+
+impl<'object, T: FileContents> BreakpadSymbolMapInner<'object, T> {
+    fn resolve_symbol_entry_name(&self, symbol_entry_index: u32) -> Option<&'object str> {
+        let entry = &self.index.symbol_entries.get(symbol_entry_index as usize)?;
+        let mut cache = self.cache.lock().unwrap();
+        cache
+            .symbols
+            .get_name(symbol_entry_index, entry, self.data)
+            .ok()?
+    }
+
+    fn resolve_inline_origin_name(&self, inline_origin_index: u32) -> Option<&'object str> {
+        self.index
+            .inline_origins
+            .get(inline_origin_index, self.data)
+            .and_then(|s| std::str::from_utf8(s).ok())
     }
 }
 
@@ -317,33 +300,27 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
             Err(0) => return None,
             Err(i) => i - 1,
         };
+        let symbol_name = self
+            .generation
+            .symbol_name_handle(SymbolNameIndex(index as u32));
         let symbol_address = self.index.symbol_addresses[index].get();
         let next_symbol_address = self.index.symbol_addresses.get(index + 1).map(|a| a.get());
-        let mut cache = self.cache.lock().unwrap();
-        let BreakpadSymbolMapCache {
-            inline_origins,
-            symbols,
-            ..
-        } = &mut *cache;
         let entry = &self.index.symbol_entries[index];
         let kind = entry.kind.get();
         match kind {
-            SYMBOL_ENTRY_KIND_PUBLIC => {
-                let info = symbols
-                    .get_public_info(index as u32, entry, self.data)
-                    .ok()?;
-                Some(SyncAddressInfo {
-                    symbol: SymbolInfo {
-                        address: symbol_address,
-                        size: next_symbol_address.and_then(|next_symbol_address| {
-                            next_symbol_address.checked_sub(symbol_address)
-                        }),
-                        name: std::str::from_utf8(info.name).ok()?.to_string(),
-                    },
-                    frames: None,
-                })
-            }
+            SYMBOL_ENTRY_KIND_PUBLIC => Some(SyncAddressInfo {
+                symbol: SymbolInfo {
+                    address: symbol_address,
+                    size: next_symbol_address.and_then(|next_symbol_address| {
+                        next_symbol_address.checked_sub(symbol_address)
+                    }),
+                    name: symbol_name,
+                },
+                frames: None,
+            }),
             SYMBOL_ENTRY_KIND_FUNC => {
+                let mut cache = self.cache.lock().unwrap();
+                let symbols = &mut cache.symbols;
                 let info = symbols.get_func_info(index as u32, entry, self.data).ok()?;
                 let symbols = &*symbols;
                 let func_end_addr = symbol_address + info.size;
@@ -353,19 +330,20 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
 
                 let mut frames = Vec::new();
                 let mut depth = 0;
-                let mut name = Some(std::str::from_utf8(info.name).ok()?);
+                let mut name = self
+                    .generation
+                    .function_name_handle(FunctionNameIndex(index as u32));
                 while let Some(inlinee) =
                     info.get_inlinee_at_depth(depth, address, &symbols.inlinees)
                 {
                     frames.push(FrameDebugInfo {
-                        function: name.map(ToString::to_string),
+                        function: Some(name),
                         file_path: Some(self.generation.source_file_handle(inlinee.call_file)),
                         line_number: Some(inlinee.call_line),
                     });
-                    let inline_origin = inline_origins
-                        .get(inlinee.origin_id, self.data)
-                        .and_then(|s| std::str::from_utf8(s).ok());
-                    name = inline_origin;
+                    name = self.generation.function_name_handle(FunctionNameIndex(
+                        self.index.symbol_entries.len() as u32 + inlinee.origin_id,
+                    ));
                     depth += 1;
                 }
                 let line_info = info.get_innermost_sourceloc(address, &symbols.lines);
@@ -376,7 +354,7 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
                     (None, None)
                 };
                 frames.push(FrameDebugInfo {
-                    function: name.map(ToString::to_string),
+                    function: Some(name),
                     file_path: file,
                     line_number,
                 });
@@ -386,7 +364,7 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
                     symbol: SymbolInfo {
                         address: symbol_address,
                         size: Some(info.size),
-                        name: std::str::from_utf8(info.name).ok()?.to_string(),
+                        name: symbol_name,
                     },
                     frames: Some(FramesLookupResult::Available(frames)),
                 })
@@ -395,10 +373,25 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
         }
     }
 
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'object, str> {
+        let index = self.generation.unwrap_function_name_index(handle);
+        let s = match index.0.checked_sub(self.index.symbol_entries.len() as u32) {
+            Some(inline_index) => self.resolve_inline_origin_name(inline_index),
+            None => self.resolve_symbol_entry_name(index.0),
+        };
+        Cow::Borrowed(s.unwrap_or("<missing>"))
+    }
+
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'object, str> {
+        let index = self.generation.unwrap_symbol_name_index(handle);
+        let s = self.resolve_symbol_entry_name(index.0);
+        Cow::Borrowed(s.unwrap_or("<missing>"))
+    }
+
     fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'object> {
         let index = self.generation.unwrap_source_file_index(handle);
-        let cache = self.cache.lock().unwrap();
-        let s = cache
+        let s = self
+            .index
             .files
             .get(index.0, self.data)
             .and_then(|s| std::str::from_utf8(s).ok())
@@ -423,15 +416,12 @@ mod test {
         let sym = b"MODULE Linux x86_64 BE4E976C325246EE9D6B7847A670B2A90 example-linux\nFILE 0 filename\nFUNC 1160 45 0 f\n1160 c 16 0";
         let fc = FileContentsWrapper::new(&sym[..]);
         let symbol_map = get_symbol_map_for_breakpad_sym(fc, None).unwrap();
-        assert_eq!(
-            symbol_map
-                .get_inner_symbol_map()
-                .lookup_sync(LookupAddress::Relative(0x1160))
-                .unwrap()
-                .symbol
-                .name,
-            "f"
-        );
+        let symbol_map = symbol_map.get_inner_symbol_map();
+        let symbol = symbol_map
+            .lookup_sync(LookupAddress::Relative(0x1160))
+            .unwrap()
+            .symbol;
+        assert_eq!(symbol_map.resolve_symbol_name(symbol.name), "f");
     }
 
     #[test]
@@ -464,18 +454,18 @@ mod test {
         let sym_fc = FileContentsWrapper::new(full_sym_contents);
         let symindex_fc = FileContentsWrapper::new(index_bytes);
         let symbol_map = get_symbol_map_for_breakpad_sym(sym_fc, Some(symindex_fc)).unwrap();
+        let symbol_map = symbol_map.get_inner_symbol_map();
 
         assert_eq!(
-            symbol_map.get_inner_symbol_map().debug_id(),
+            symbol_map.debug_id(),
             DebugId::from_breakpad("F1E853FD662672044C4C44205044422E1").unwrap()
         );
 
         let lookup_result = symbol_map
-            .get_inner_symbol_map()
             .lookup_sync(LookupAddress::Relative(0x2b7ed))
             .unwrap();
         assert_eq!(
-            lookup_result.symbol.name,
+            symbol_map.resolve_symbol_name(lookup_result.symbol.name),
             "DloadAcquireSectionWriteAccess()"
         );
         assert_eq!(lookup_result.symbol.address, 0x2b754);
@@ -487,38 +477,41 @@ mod test {
         };
         assert_eq!(frames.len(), 4);
         assert_eq!(
-            frames[0].function.as_deref().unwrap(),
+            symbol_map.resolve_function_name(frames[0].function.unwrap()),
             "WriteRelease64(long long*, long long)"
         );
         assert_eq!(
-            symbol_map.get_inner_symbol_map().resolve_source_file_path(frames[0].file_path.unwrap()).raw_path(),
+            symbol_map.resolve_source_file_path(frames[0].file_path.unwrap()).raw_path(),
             "/builds/worker/workspace/obj-build/browser/app/d:/agent/_work/2/s/src/externalapis/windows/10/sdk/inc/winnt.h"
         );
         assert_eq!(frames[0].line_number, Some(7729));
 
         assert_eq!(
-            frames[1].function.as_deref().unwrap(),
+            symbol_map.resolve_function_name(frames[1].function.unwrap()),
             "WritePointerRelease(void**, void*)"
         );
         assert_eq!(
-            symbol_map.get_inner_symbol_map().resolve_source_file_path(frames[1].file_path.unwrap()).raw_path(),
+            symbol_map.resolve_source_file_path(frames[1].file_path.unwrap()).raw_path(),
             "/builds/worker/workspace/obj-build/browser/app/d:/agent/_work/2/s/src/externalapis/windows/10/sdk/inc/winnt.h"
         );
         assert_eq!(frames[1].line_number, Some(8358));
 
-        assert_eq!(frames[2].function.as_deref().unwrap(), "DloadUnlock()");
         assert_eq!(
-            symbol_map.get_inner_symbol_map().resolve_source_file_path(frames[2].file_path.unwrap()).raw_path(),
+            symbol_map.resolve_function_name(frames[2].function.unwrap()),
+            "DloadUnlock()"
+        );
+        assert_eq!(
+            symbol_map.resolve_source_file_path(frames[2].file_path.unwrap()).raw_path(),
             "/builds/worker/workspace/obj-build/browser/app/d:/agent/_work/2/s/src/vctools/delayimp/dloadsup.h"
         );
         assert_eq!(frames[2].line_number, Some(345));
 
         assert_eq!(
-            frames[3].function.as_deref().unwrap(),
+            symbol_map.resolve_function_name(frames[3].function.unwrap()),
             "DloadAcquireSectionWriteAccess()"
         );
         assert_eq!(
-            symbol_map.get_inner_symbol_map().resolve_source_file_path(frames[3].file_path.unwrap()).raw_path(),
+            symbol_map.resolve_source_file_path(frames[3].file_path.unwrap()).raw_path(),
             "/builds/worker/workspace/obj-build/browser/app/d:/agent/_work/2/s/src/vctools/delayimp/dloadsup.h"
         );
         assert_eq!(frames[3].line_number, Some(665));

@@ -12,7 +12,7 @@ use crate::shared::{
     ExternalFileAddressInFileRef, FileAndPathHelper, FileContents, FileContentsWrapper,
     FrameDebugInfo,
 };
-use crate::PathInterner;
+use crate::SymbolMapStringInterner;
 
 pub async fn load_external_file<H>(
     helper: &H,
@@ -138,7 +138,7 @@ trait ExternalFileInnerTrait {
     fn lookup(
         &self,
         external_file_address: &ExternalFileAddressInFileRef,
-        path_interner: &mut PathInterner,
+        string_interner: &mut SymbolMapStringInterner,
     ) -> Option<Vec<FrameDebugInfo>>;
 }
 
@@ -151,7 +151,7 @@ impl<F: FileContents> ExternalFileInnerTrait for ExternalFileInner<'_, F> {
     fn lookup(
         &self,
         external_file_address: &ExternalFileAddressInFileRef,
-        path_interner: &mut PathInterner,
+        string_interner: &mut SymbolMapStringInterner,
     ) -> Option<Vec<FrameDebugInfo>> {
         match (&self.member_contexts, external_file_address) {
             (
@@ -160,7 +160,7 @@ impl<F: FileContents> ExternalFileInnerTrait for ExternalFileInner<'_, F> {
                     symbol_name,
                     offset_from_symbol,
                 },
-            ) => context.lookup(symbol_name, *offset_from_symbol, path_interner),
+            ) => context.lookup(symbol_name, *offset_from_symbol, string_interner),
             (
                 ExternalFileMemberContexts::Archive {
                     member_ranges,
@@ -175,14 +175,17 @@ impl<F: FileContents> ExternalFileInnerTrait for ExternalFileInner<'_, F> {
                 let mut member_contexts = contexts.lock().unwrap();
                 match member_contexts.get(name_in_archive) {
                     Some(member_context) => {
-                        member_context.lookup(symbol_name, *offset_from_symbol, path_interner)
+                        member_context.lookup(symbol_name, *offset_from_symbol, string_interner)
                     }
                     None => {
                         let range = *member_ranges.get(name_in_archive.as_bytes())?;
                         // .ok_or_else(|| Error::FileNotInArchive(name_in_archive.to_owned()))?;
                         let member_context = self.external_file.make_member_context(range).ok()?;
-                        let res =
-                            member_context.lookup(symbol_name, *offset_from_symbol, path_interner);
+                        let res = member_context.lookup(
+                            symbol_name,
+                            *offset_from_symbol,
+                            string_interner,
+                        );
                         member_contexts.insert(name_in_archive.to_string(), member_context);
                         res
                     }
@@ -211,11 +214,11 @@ impl ExternalFileMemberContext<'_> {
         &self,
         symbol_name: &[u8],
         offset_from_symbol: u32,
-        path_interner: &mut PathInterner,
+        string_interner: &mut SymbolMapStringInterner,
     ) -> Option<Vec<FrameDebugInfo>> {
         let symbol_address = self.symbol_addresses.get(symbol_name)?;
         let address = symbol_address + offset_from_symbol as u64;
-        get_frames(address, self.context.as_ref(), path_interner)
+        get_frames(address, self.context.as_ref(), string_interner)
     }
 }
 
@@ -246,8 +249,11 @@ impl<F: FileContents + 'static> ExternalFileSymbolMap<F> {
     pub fn lookup(
         &self,
         external_file_address: &ExternalFileAddressInFileRef,
-        path_interner: &mut PathInterner,
+        string_interner: &mut SymbolMapStringInterner,
     ) -> Option<Vec<FrameDebugInfo>> {
-        self.0.get().0.lookup(external_file_address, path_interner)
+        self.0
+            .get()
+            .0
+            .lookup(external_file_address, string_interner)
     }
 }
