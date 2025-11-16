@@ -2,10 +2,10 @@ use std::borrow::Cow;
 
 use crate::{generation::SymbolMapGeneration, mapped_path::UnparsedMappedPath};
 
-/// A handle for a [`SourceFilePath`]. Can be resolved with the symbol map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceFilePathIndex(pub u32);
 
+/// A handle for a [`SourceFilePath`]. Can be resolved with the symbol map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceFilePathHandle {
     generation: SymbolMapGeneration,
