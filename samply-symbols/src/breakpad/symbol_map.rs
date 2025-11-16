@@ -10,7 +10,7 @@ use super::index::{
     BreakpadPublicSymbol, BreakpadPublicSymbolInfo, StringListRef, SYMBOL_ENTRY_KIND_FUNC,
     SYMBOL_ENTRY_KIND_PUBLIC,
 };
-use crate::breakpad::index::{Inlinee, OwnedBreakpadIndex, SourceLine};
+use crate::breakpad::index::{BreakpadSymbolEntry, Inlinee, OwnedBreakpadIndex, SourceLine};
 use crate::generation::SymbolMapGeneration;
 use crate::source_file_path::SourceFilePathHandle;
 use crate::symbol_map::{GetInnerSymbolMap, SymbolMapTrait};
@@ -129,8 +129,8 @@ struct BreakpadSymbolMapCache<'a> {
 
 #[derive(Debug, Clone, Default)]
 struct BreakpadSymbolMapSymbolCache<'a> {
-    public_symbols: HashMap<u64, BreakpadPublicSymbolInfo<'a>>,
-    func_symbols: HashMap<u64, BreakpadFuncSymbolInfo<'a>>,
+    public_symbols: HashMap<u32, BreakpadPublicSymbolInfo<'a>>,
+    func_symbols: HashMap<u32, BreakpadFuncSymbolInfo<'a>>,
     lines: Vec<SourceLine>,
     inlinees: Vec<Inlinee>,
     only_store_latest: bool,
@@ -149,46 +149,50 @@ impl<'a> BreakpadSymbolMapCache<'a> {
 impl<'a> BreakpadSymbolMapSymbolCache<'a> {
     pub fn get_public_info<T: FileContents>(
         &mut self,
-        file_offset: u64,
-        line_length: u32,
+        entry_index: u32,
+        entry: &BreakpadSymbolEntry,
         data: &'a FileContentsWrapper<T>,
     ) -> Result<BreakpadPublicSymbolInfo<'a>, Error> {
-        if let Some(info) = self.public_symbols.get(&file_offset) {
+        if let Some(info) = self.public_symbols.get(&entry_index) {
             return Ok(*info);
         }
 
         self.clear_if_saving_memory();
 
+        let file_offset = entry.offset.get();
+        let line_length = entry.line_or_block_len.get();
         let line = data
             .read_bytes_at(file_offset, line_length.into())
             .map_err(|e| {
                 Error::HelperErrorDuringFileReading("Breakpad PUBLIC symbol".to_string(), e)
             })?;
         let info = BreakpadPublicSymbol::parse(line)?;
-        self.public_symbols.insert(file_offset, info);
+        self.public_symbols.insert(entry_index, info);
 
         Ok(info)
     }
 
     pub fn get_func_info<'s, T: FileContents>(
         &'s mut self,
-        file_offset: u64,
-        block_length: u32,
+        entry_index: u32,
+        entry: &BreakpadSymbolEntry,
         data: &'a FileContentsWrapper<T>,
     ) -> Result<BreakpadFuncSymbolInfo<'a>, Error> {
-        if let Some(info) = self.func_symbols.get(&file_offset) {
+        if let Some(info) = self.func_symbols.get(&entry_index) {
             return Ok(*info);
         }
 
         self.clear_if_saving_memory();
 
+        let file_offset = entry.offset.get();
+        let block_length = entry.line_or_block_len.get();
         let block = data
             .read_bytes_at(file_offset, block_length.into())
             .map_err(|e| {
                 Error::HelperErrorDuringFileReading("Breakpad FUNC symbol".to_string(), e)
             })?;
         let info = BreakpadFuncSymbol::parse(block, &mut self.lines, &mut self.inlinees)?;
-        self.func_symbols.insert(file_offset, info);
+        self.func_symbols.insert(entry_index, info);
         Ok(info)
     }
 
@@ -217,20 +221,18 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
             let mut cache = self.cache.lock().unwrap();
             let entry = &self.index.symbol_entries[i];
             let kind = entry.kind.get();
-            let offset = entry.offset.get();
-            let line_or_block_len = entry.line_or_block_len.get();
             let name = match kind {
                 SYMBOL_ENTRY_KIND_PUBLIC => {
                     let public_info = cache
                         .symbols
-                        .get_public_info(offset, line_or_block_len, self.data)
+                        .get_public_info(i as u32, entry, self.data)
                         .ok()?;
                     public_info.name
                 }
                 SYMBOL_ENTRY_KIND_FUNC => {
                     let func_info = cache
                         .symbols
-                        .get_func_info(offset, line_or_block_len, self.data)
+                        .get_func_info(i as u32, entry, self.data)
                         .ok()?;
                     func_info.name
                 }
@@ -272,12 +274,10 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
         } = &mut *cache;
         let entry = &self.index.symbol_entries[index];
         let kind = entry.kind.get();
-        let offset = entry.offset.get();
-        let line_or_block_len = entry.line_or_block_len.get();
         match kind {
             SYMBOL_ENTRY_KIND_PUBLIC => {
                 let info = symbols
-                    .get_public_info(offset, line_or_block_len, self.data)
+                    .get_public_info(index as u32, entry, self.data)
                     .ok()?;
                 Some(SyncAddressInfo {
                     symbol: SymbolInfo {
@@ -291,9 +291,7 @@ impl<'object, T: FileContents> SymbolMapTrait for BreakpadSymbolMapInner<'object
                 })
             }
             SYMBOL_ENTRY_KIND_FUNC => {
-                let info = symbols
-                    .get_func_info(offset, line_or_block_len, self.data)
-                    .ok()?;
+                let info = symbols.get_func_info(index as u32, entry, self.data).ok()?;
                 let symbols = &*symbols;
                 let func_end_addr = symbol_address + info.size;
                 if address >= func_end_addr {
