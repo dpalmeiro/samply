@@ -84,7 +84,7 @@ pub enum LookupAddress {
     ///   records plus the offset of the instruction within the code of this
     ///   `JIT_CODE_LOAD` record.
     ///
-    /// See [`relative_address_base`] for more information.
+    /// See [`samply_object::relative_address_base`] for more information.
     Relative(u32),
     /// A "stated virtual memory address", i.e. a virtual memory address as
     /// written down in the binary. In mach-O and ELF, this is the space that
