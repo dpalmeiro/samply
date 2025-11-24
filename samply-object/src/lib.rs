@@ -55,7 +55,7 @@ pub fn debug_id_for_object<'data>(obj: &impl Object<'data>) -> Option<DebugId> {
     None
 }
 
-/// The "relative address base" is the base address which [`LookupAddress::Relative`]
+/// The "relative address base" is the base address which [`LookupAddress::Relative`](https://docs.rs/samply-symbols/latest/samply_symbols/enum.LookupAddress.html#variant.Relative)
 /// addresses are relative to. You start with an SVMA (a stated virtual memory address),
 /// you subtract the relative address base, and out comes a relative address.
 ///

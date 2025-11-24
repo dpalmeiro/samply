@@ -24,8 +24,8 @@ use crate::symbol_map::{
     SymbolMapTraitWithExternalFileSupport,
 };
 use crate::{
-    demangle, Error, ExternalFileSymbolMap, FileContents, PathInterner, SourceFilePath,
-    SourceFilePathHandle, SyncAddressInfo,
+    demangle, Error, ExternalFileSymbolMap, FileContents, FunctionNameHandle, SourceFilePath,
+    SourceFilePathHandle, SymbolMapStringInterner, SymbolNameHandle, SyncAddressInfo,
 };
 
 enum FullSymbolListEntry<'a, Symbol> {
@@ -365,7 +365,7 @@ pub struct ObjectSymbolMapInner<'a, Symbol, FC: FileContents + 'static, DDM> {
     image_base_address: u64,
     dwo_dwarf_maker: &'a DDM,
     cached_external_file: Mutex<Option<ExternalFileSymbolMap<FC>>>,
-    path_interner: Mutex<PathInterner<'a>>,
+    string_interner: Mutex<SymbolMapStringInterner<'a>>,
     _phantom: PhantomData<FC>,
 }
 
@@ -413,7 +413,7 @@ where
         external: &ExternalFileAddressRef,
         mut request: ExternalLookupRequest<FC>,
     ) -> Option<FramesLookupResult> {
-        let mut path_interner = self.path_interner.lock().unwrap();
+        let mut string_interner = self.string_interner.lock().unwrap();
         match &external.file_ref {
             ExternalFileRef::MachoExternalObject { file_path } => {
                 {
@@ -421,7 +421,7 @@ where
                     match &*cached_external_file {
                         Some(external_file) if external_file.file_path() == file_path => {
                             return external_file
-                                .lookup(&external.address_in_file, &mut path_interner)
+                                .lookup(&external.address_in_file, &mut string_interner)
                                 .map(FramesLookupResult::Available);
                         }
                         _ => {}
@@ -437,7 +437,7 @@ where
                 };
                 let external_file = ExternalFileSymbolMap::new(file_path, file_contents).ok()?;
                 let lookup_result = external_file
-                    .lookup(&external.address_in_file, &mut path_interner)
+                    .lookup(&external.address_in_file, &mut string_interner)
                     .map(FramesLookupResult::Available);
 
                 *self.cached_external_file.lock().unwrap() = Some(external_file);
@@ -485,7 +485,7 @@ where
                             continue;
                         }
                         LookupResult::Output(Ok(frame_iter)) => {
-                            convert_frames(frame_iter, &mut path_interner)
+                            convert_frames(frame_iter, &mut string_interner)
                                 .map(FramesLookupResult::Available)
                         }
                         LookupResult::Output(Err(_)) => None,
@@ -540,15 +540,20 @@ where
         let (start_addr, end_addr, name) = self.list.lookup_relative_address(relative_address)?;
         let function_size = end_addr - start_addr;
         let name = demangle::demangle_any(&name);
+
+        let name_handle = {
+            let mut string_interner = self.string_interner.lock().unwrap();
+            string_interner.intern_owned(&name).into()
+        };
+
         let symbol = SymbolInfo {
             address: start_addr,
             size: Some(function_size),
-            name,
+            name: name_handle,
         };
 
         let mut frames = None;
         if let Some(context) = self.context.as_ref() {
-            let mut path_interner = self.path_interner.lock().unwrap();
             let context = context.lock().unwrap();
             let mut lookup_result = context.find_frames(svma);
 
@@ -569,7 +574,8 @@ where
                         ))
                     }
                     LookupResult::Output(Ok(frame_iter)) => {
-                        convert_frames(frame_iter, &mut path_interner)
+                        let mut string_interner = self.string_interner.lock().unwrap();
+                        convert_frames(frame_iter, &mut string_interner)
                             .map(FramesLookupResult::Available)
                     }
                     LookupResult::Output(Err(_)) => {
@@ -592,9 +598,23 @@ where
         Some(SyncAddressInfo { symbol, frames })
     }
 
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        let string_interner = self.string_interner.lock().unwrap();
+        let s = string_interner.resolve(handle.into());
+        s.expect("unknown handle?")
+    }
+
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        let string_interner = self.string_interner.lock().unwrap();
+        let s = string_interner.resolve(handle.into());
+        s.expect("unknown handle?")
+    }
+
     fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {
-        let path_interner = self.path_interner.lock().unwrap();
-        let raw_path = path_interner.resolve(handle).expect("unknown handle?");
+        let string_interner = self.string_interner.lock().unwrap();
+        let raw_path = string_interner
+            .resolve(handle.into())
+            .expect("unknown handle?");
         SourceFilePath::RawPath(raw_path.clone())
     }
 }
@@ -694,7 +714,7 @@ impl<'a, FC: FileContents + 'static> ObjectSymbolMapInnerWrapper<'a, FC> {
             svma_file_ranges: SvmaFileRanges::from_object(object_file),
             dwo_dwarf_maker,
             cached_external_file: Mutex::new(None),
-            path_interner: Mutex::new(PathInterner::new(SymbolMapGeneration::new())),
+            string_interner: Mutex::new(SymbolMapStringInterner::new(SymbolMapGeneration::new())),
             _phantom: PhantomData,
         };
         Self(Box::new(inner))

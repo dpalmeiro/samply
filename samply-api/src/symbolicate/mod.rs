@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use samply_symbols::{
     AccessPatternHint, FileAndPathHelper, FramesLookupResult, LibraryInfo, LookupAddress,
-    SourceFilePath, SourceFilePathHandle, SymbolManager, SymbolMap,
+    SymbolManager,
 };
 
 use crate::error::Error;
-use crate::symbolicate::looked_up_addresses::{AddressResult, AddressResults, PathResolver};
-use crate::symbolicate::response_json::{PerLibResult, Response};
+use crate::symbolicate::looked_up_addresses::{AddressResult, AddressResults};
+use crate::symbolicate::response_json::{LibSymbols, Response};
 use crate::to_debug_id;
 
 pub mod looked_up_addresses;
@@ -16,12 +16,6 @@ pub mod request_json;
 pub mod response_json;
 
 use request_json::Lib;
-
-impl<H: FileAndPathHelper> PathResolver for SymbolMap<H> {
-    fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {
-        self.resolve_source_file_path(handle)
-    }
-}
 
 pub struct SymbolicateApi<'a, H: FileAndPathHelper> {
     symbol_manager: &'a SymbolManager<H>,
@@ -46,19 +40,19 @@ impl<'a, H: FileAndPathHelper + 'static> SymbolicateApi<'a, H> {
         request: request_json::Request,
     ) -> Result<response_json::Response<H>, Error> {
         let requested_addresses = gather_requested_addresses(&request)?;
-        let per_lib_results = self
+        let symbols_per_lib = self
             .symbolicate_requested_addresses(requested_addresses)
             .await;
         Ok(Response {
             request,
-            per_lib_results,
+            symbols_per_lib,
         })
     }
 
     async fn symbolicate_requested_addresses(
         &self,
         requested_addresses: HashMap<Lib, Vec<u32>>,
-    ) -> HashMap<Lib, Result<PerLibResult<H>, samply_symbols::Error>> {
+    ) -> HashMap<Lib, Result<LibSymbols<H>, samply_symbols::Error>> {
         let mut symbolicated_addresses = HashMap::new();
         for (lib, addresses) in requested_addresses.into_iter() {
             let address_results = self
@@ -73,7 +67,7 @@ impl<'a, H: FileAndPathHelper + 'static> SymbolicateApi<'a, H> {
         &self,
         lib: &Lib,
         addresses: &[u32],
-    ) -> Result<PerLibResult<H>, samply_symbols::Error> {
+    ) -> Result<LibSymbols<H>, samply_symbols::Error> {
         let debug_id = to_debug_id(&lib.breakpad_id)?;
 
         let info = LibraryInfo {
@@ -124,7 +118,7 @@ impl<'a, H: FileAndPathHelper + 'static> SymbolicateApi<'a, H> {
             }
         }
 
-        let outcome = PerLibResult {
+        let outcome = LibSymbols {
             address_results,
             symbol_map: Arc::new(symbol_map),
         };

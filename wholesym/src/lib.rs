@@ -27,13 +27,15 @@
 //!     .await?;
 //! println!("Looking up 0xd6f4 in /usr/bin/ls. Results:");
 //! if let Some(address_info) = symbol_map.lookup(LookupAddress::Relative(0xd6f4)).await {
+//!     let symbol_name = symbol_map.resolve_symbol_name(address_info.symbol.name);
 //!     println!(
 //!         "Symbol: {:#x} {}",
-//!         address_info.symbol.address, address_info.symbol.name
+//!         address_info.symbol.address, symbol_name
 //!     );
 //!     if let Some(frames) = address_info.frames {
 //!         for (i, frame) in frames.into_iter().enumerate() {
-//!             let function = frame.function.unwrap();
+//!             let function_handle = frame.function.unwrap();
+//!             let function = symbol_map.resolve_function_name(function_handle);
 //!             let file = symbol_map.resolve_source_file_path(frame.file_path.unwrap());
 //!             let path = file.display_path();
 //!             let line = frame.line_number.unwrap();
@@ -153,9 +155,10 @@ pub use samply_debugid::{CodeId, ElfBuildId, PeCodeId};
 pub use samply_symbols;
 pub use samply_symbols::{
     AddressInfo, Error, ExternalFileAddressInFileRef, ExternalFileAddressRef, ExternalFileRef,
-    ExternalFileSymbolMap, FrameDebugInfo, FramesLookupResult, LibraryInfo, LookupAddress,
-    MappedPath, MultiArchDisambiguator, SourceFilePath, SourceFilePathHandle, SourceFilePathIndex,
-    SymbolInfo, SymbolMapGeneration, SyncAddressInfo,
+    ExternalFileSymbolMap, FrameDebugInfo, FramesLookupResult, FunctionNameHandle,
+    FunctionNameIndex, LibraryInfo, LookupAddress, MappedPath, MultiArchDisambiguator,
+    SourceFilePath, SourceFilePathHandle, SourceFilePathIndex, SymbolInfo, SymbolMapGeneration,
+    SymbolNameHandle, SymbolNameIndex, SyncAddressInfo,
 };
 pub use symbol_manager::{SymbolFileOrigin, SymbolManager, SymbolMap};
 pub use symbol_manager_observer::SymbolManagerObserver;

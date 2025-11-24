@@ -92,15 +92,18 @@
 //!     match lookup_result {
 //!         Some(address_info) => {
 //!             // Print the symbol name for this address:
-//!             println!("0x1f98f: {}", address_info.symbol.name);
+//!             let symbol_name = symbol_map.resolve_symbol_name(address_info.symbol.name);
+//!             println!("0x1f98f: {}", symbol_name);
 //!
 //!             // See if we have debug info (file name + line, and inlined frames):
 //!             if let Some(frames) = address_info.frames {
 //!                 println!("Debug info:");
 //!                 for frame in frames {
+//!                     let function_name = frame.function.map(|h| symbol_map.resolve_function_name(h).into_owned());
+//!                     let file_path = frame.file_path.map(|h| symbol_map.resolve_source_file_path(h));
 //!                     println!(
 //!                         " - {:?} ({:?}:{:?})",
-//!                         frame.function, frame.file_path, frame.line_number
+//!                         function_name, file_path, frame.line_number
 //!                     );
 //!                 }
 //!             }
@@ -231,11 +234,11 @@ mod generation;
 mod jitdump;
 mod macho;
 mod mapped_path;
-mod path_interner;
 mod shared;
 mod source_file_path;
 mod symbol_map;
 mod symbol_map_object;
+mod symbol_map_string_interner;
 mod windows;
 
 pub use crate::binary_image::{BinaryImage, CodeByteReadingError};
@@ -252,16 +255,16 @@ pub use crate::generation::SymbolMapGeneration;
 pub use crate::jitdump::debug_id_and_code_id_for_jitdump;
 pub use crate::macho::FatArchiveMember;
 pub use crate::mapped_path::MappedPath;
-pub use crate::path_interner::PathInterner;
 pub use crate::shared::{
     AddressInfo, CandidatePathInfo, ExternalFileAddressInFileRef, ExternalFileAddressRef,
     ExternalFileRef, FileAndPathHelper, FileAndPathHelperError, FileAndPathHelperResult,
     FileContents, FileContentsWrapper, FileLocation, FrameDebugInfo, FramesLookupResult,
-    LibraryInfo, LookupAddress, MultiArchDisambiguator, OptionallySendFuture, SymbolInfo,
-    SyncAddressInfo,
+    FunctionNameHandle, FunctionNameIndex, LibraryInfo, LookupAddress, MultiArchDisambiguator,
+    OptionallySendFuture, SymbolInfo, SymbolNameHandle, SymbolNameIndex, SyncAddressInfo,
 };
 pub use crate::source_file_path::{SourceFilePath, SourceFilePathHandle, SourceFilePathIndex};
 pub use crate::symbol_map::{AccessPatternHint, SymbolMap, SymbolMapTrait};
+pub use crate::symbol_map_string_interner::SymbolMapStringInterner;
 
 pub struct SymbolManager<H: FileAndPathHelper> {
     helper: Arc<H>,

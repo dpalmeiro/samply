@@ -8,7 +8,9 @@ use fxprof_processed_profile::symbol_info::{
 };
 use fxprof_processed_profile::LibraryHandle;
 use rustc_hash::FxHashMap;
-use wholesym::{SourceFilePathHandle, SymbolManager, SymbolMap};
+use wholesym::{
+    FunctionNameHandle, SourceFilePathHandle, SymbolManager, SymbolMap, SymbolNameHandle,
+};
 
 use crate::symbols::create_symbol_manager_and_quota_manager;
 
@@ -17,12 +19,28 @@ use super::prop_types::SymbolProps;
 struct StringTableAdapterForSymbolTable<'a> {
     symbol_map: &'a SymbolMap,
     string_table: &'a mut SymbolStringTable,
-    index_for_handle: FxHashMap<SourceFilePathHandle, SymbolStringIndex>,
+    function_name_map: FxHashMap<FunctionNameHandle, SymbolStringIndex>,
+    symbol_name_map: FxHashMap<SymbolNameHandle, SymbolStringIndex>,
+    source_file_path_map: FxHashMap<SourceFilePathHandle, SymbolStringIndex>,
 }
 
 impl<'a> StringTableAdapterForSymbolTable<'a> {
+    pub fn map_function_name(&mut self, handle: FunctionNameHandle) -> SymbolStringIndex {
+        *self.function_name_map.entry(handle).or_insert_with(|| {
+            let function_name = self.symbol_map.resolve_function_name(handle);
+            self.string_table.index_for_string(&function_name)
+        })
+    }
+
+    pub fn map_symbol_name(&mut self, handle: SymbolNameHandle) -> SymbolStringIndex {
+        *self.symbol_name_map.entry(handle).or_insert_with(|| {
+            let symbol_name = self.symbol_map.resolve_symbol_name(handle);
+            self.string_table.index_for_string(&symbol_name)
+        })
+    }
+
     pub fn map_source_file_path(&mut self, handle: SourceFilePathHandle) -> SymbolStringIndex {
-        *self.index_for_handle.entry(handle).or_insert_with(|| {
+        *self.source_file_path_map.entry(handle).or_insert_with(|| {
             let path = self.symbol_map.resolve_source_file_path(handle);
             let path_str = path
                 .special_path_str()
@@ -36,9 +54,8 @@ fn convert_address_frame(
     frame: &wholesym::FrameDebugInfo,
     strtab: &mut StringTableAdapterForSymbolTable,
 ) -> Option<ProfileAddressFrame> {
-    let function_name = strtab
-        .string_table
-        .index_for_string(frame.function.as_ref()?);
+    let function_handle = frame.function?;
+    let function_name = strtab.map_function_name(function_handle);
     let file = frame
         .file_path
         .map(|handle| strtab.map_source_file_path(handle));
@@ -54,7 +71,7 @@ fn convert_address_info(
     info: &wholesym::AddressInfo,
     strtab: &mut StringTableAdapterForSymbolTable,
 ) -> ProfileAddressInfo {
-    let symbol_name = strtab.string_table.index_for_string(&info.symbol.name);
+    let symbol_name = strtab.map_symbol_name(info.symbol.name);
     let frames = info
         .frames
         .as_ref()
@@ -180,7 +197,9 @@ async fn get_lib_symbols(
         let mut string_table = StringTableAdapterForSymbolTable {
             symbol_map: &symbol_map,
             string_table: &mut string_table,
-            index_for_handle: Default::default(),
+            function_name_map: Default::default(),
+            symbol_name_map: Default::default(),
+            source_file_path_map: Default::default(),
         };
 
         let address_info = convert_address_info(&addr_info, &mut string_table);

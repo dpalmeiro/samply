@@ -23,7 +23,10 @@ use crate::symbol_map::{GetInnerSymbolMap, SymbolMap, SymbolMapTrait};
 use crate::symbol_map_object::{
     ObjectSymbolMap, ObjectSymbolMapInnerWrapper, ObjectSymbolMapOuter,
 };
-use crate::{demangle, PathInterner, SourceFilePath, SourceFilePathHandle, SyncAddressInfo};
+use crate::{
+    demangle, FunctionNameHandle, SourceFilePath, SourceFilePathHandle, SymbolMapStringInterner,
+    SymbolNameHandle, SyncAddressInfo,
+};
 
 pub async fn load_symbol_map_for_pdb_corresponding_to_binary<H: FileAndPathHelper>(
     file_kind: FileKind,
@@ -186,7 +189,7 @@ impl<FC: FileContents + 'static> PdbObjectTrait for PdbObject<'_, FC> {
             context,
             debug_id: self.debug_id,
             path_mapper: Mutex::new(path_mapper),
-            path_interner: Mutex::new(PathInterner::new(SymbolMapGeneration::new())),
+            string_interner: Mutex::new(SymbolMapStringInterner::new(SymbolMapGeneration::new())),
         };
         Ok(symbol_map)
     }
@@ -234,7 +237,7 @@ struct PdbSymbolMapInner<'object> {
     context: Box<dyn PdbAddr2lineContextTrait + Send + 'object>,
     debug_id: DebugId,
     path_mapper: Mutex<Option<SrcSrvPathMapper<'object>>>,
-    path_interner: Mutex<PathInterner<'object>>,
+    string_interner: Mutex<SymbolMapStringInterner<'object>>,
 }
 
 impl<'object> SymbolMapTrait for PdbSymbolMapInner<'object> {
@@ -281,19 +284,23 @@ impl<'object> SymbolMapTrait for PdbSymbolMapInner<'object> {
             .end_rva
             .map(|end_rva| end_rva - function_frames.start_rva);
 
+        let mut string_interner = self.string_interner.lock().unwrap();
+        let symbol_name_handle = string_interner.intern_owned(&symbol_name).into();
+
         let symbol = SymbolInfo {
             address: symbol_address,
             size: function_size,
-            name: symbol_name,
+            name: symbol_name_handle,
         };
         let frames = if has_debug_info(&function_frames) {
-            let mut path_interner = self.path_interner.lock().unwrap();
             let frames: Vec<_> = function_frames
                 .frames
                 .into_iter()
                 .map(|frame| FrameDebugInfo {
-                    function: frame.function,
-                    file_path: frame.file.map(|p| path_interner.intern_owned(&p)),
+                    function: frame
+                        .function
+                        .map(|f| string_interner.intern_owned(&f).into()),
+                    file_path: frame.file.map(|p| string_interner.intern_owned(&p).into()),
                     line_number: frame.line,
                 })
                 .collect();
@@ -305,10 +312,24 @@ impl<'object> SymbolMapTrait for PdbSymbolMapInner<'object> {
         Some(SyncAddressInfo { symbol, frames })
     }
 
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        let string_interner = self.string_interner.lock().unwrap();
+        let s = string_interner.resolve(handle.into());
+        s.expect("unknown handle?")
+    }
+
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        let string_interner = self.string_interner.lock().unwrap();
+        let s = string_interner.resolve(handle.into());
+        s.expect("unknown handle?")
+    }
+
     fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'object> {
         let mut path_mapper = self.path_mapper.lock().unwrap();
-        let path_interner = self.path_interner.lock().unwrap();
-        let path = path_interner.resolve(handle).expect("unknown handle?");
+        let string_interner = self.string_interner.lock().unwrap();
+        let path = string_interner
+            .resolve(handle.into())
+            .expect("unknown handle?");
 
         if let Some(path_mapper) = &mut *path_mapper {
             if let Some(UnparsedMappedPath::Url(url)) = path_mapper.map_path(&path) {
@@ -415,6 +436,14 @@ impl<T: FileContents> SymbolMapTrait for PdbSymbolMap<T> {
 
     fn lookup_sync(&self, address: LookupAddress) -> Option<SyncAddressInfo> {
         self.with_inner(|inner| inner.lookup_sync(address))
+    }
+
+    fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        self.with_inner(|inner| inner.resolve_function_name(handle).into_owned().into())
+    }
+
+    fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        self.with_inner(|inner| inner.resolve_symbol_name(handle).into_owned().into())
     }
 
     fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {

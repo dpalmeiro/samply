@@ -12,6 +12,7 @@ use debugid::DebugId;
 use object::read::ReadRef;
 use samply_debugid::{CodeId, ElfBuildId};
 
+use crate::generation::SymbolMapGeneration;
 use crate::symbol_map::SymbolMapTrait;
 use crate::SourceFilePathHandle;
 
@@ -83,7 +84,7 @@ pub enum LookupAddress {
     ///   records plus the offset of the instruction within the code of this
     ///   `JIT_CODE_LOAD` record.
     ///
-    /// See [`relative_address_base`] for more information.
+    /// See [`samply_object::relative_address_base`] for more information.
     Relative(u32),
     /// A "stated virtual memory address", i.e. a virtual memory address as
     /// written down in the binary. In mach-O and ELF, this is the space that
@@ -311,7 +312,7 @@ pub trait FileContents: Send + Sync {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct FrameDebugInfo {
     /// The function name for this frame, if known.
-    pub function: Option<String>,
+    pub function: Option<FunctionNameHandle>,
     /// The [`SourceFilePathHandle`] for this frame, if known.
     pub file_path: Option<SourceFilePathHandle>,
     /// The line number for this frame, if known.
@@ -363,6 +364,60 @@ pub trait FileLocation: Clone + Display {
     fn location_for_dwp(&self) -> Option<Self>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FunctionNameIndex(pub u32);
+
+/// A handle for a function name. Can be resolved with the symbol map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FunctionNameHandle {
+    pub(crate) generation: SymbolMapGeneration,
+    pub(crate) index: FunctionNameIndex,
+}
+
+impl SymbolMapGeneration {
+    pub fn function_name_handle(&self, index: FunctionNameIndex) -> FunctionNameHandle {
+        FunctionNameHandle {
+            generation: *self,
+            index,
+        }
+    }
+
+    pub fn unwrap_function_name_index(&self, handle: FunctionNameHandle) -> FunctionNameIndex {
+        assert_eq!(
+            handle.generation, *self,
+            "SourceFilePathHandle from wrong symbol map used"
+        );
+        handle.index
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolNameIndex(pub u32);
+
+/// A handle for a function name. Can be resolved with the symbol map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolNameHandle {
+    pub(crate) generation: SymbolMapGeneration,
+    pub(crate) index: SymbolNameIndex,
+}
+
+impl SymbolMapGeneration {
+    pub fn symbol_name_handle(&self, index: SymbolNameIndex) -> SymbolNameHandle {
+        SymbolNameHandle {
+            generation: *self,
+            index,
+        }
+    }
+
+    pub fn unwrap_symbol_name_index(&self, handle: SymbolNameHandle) -> SymbolNameIndex {
+        assert_eq!(
+            handle.generation, *self,
+            "SourceFilePathHandle from wrong symbol map used"
+        );
+        handle.index
+    }
+}
+
 /// The symbol for a function.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SymbolInfo {
@@ -371,7 +426,7 @@ pub struct SymbolInfo {
     /// The function size, in bytes. May have been approximated from neighboring symbols.
     pub size: Option<u32>,
     /// The function name, demangled.
-    pub name: String,
+    pub name: SymbolNameHandle,
 }
 
 /// The lookup result for an address.

@@ -439,28 +439,21 @@ fn linux_nonzero_base_address() {
         symbol_map.lookup_sync(LookupAddress::Relative(0x1700)),
         None
     );
+    let result = symbol_map
+        .lookup_sync(LookupAddress::Relative(0x18a0))
+        .unwrap();
+    assert_eq!(symbol_map.resolve_symbol_name(result.symbol.name), "start");
+
+    let result = symbol_map
+        .lookup_sync(LookupAddress::Relative(0x19ea))
+        .unwrap();
+    assert_eq!(symbol_map.resolve_symbol_name(result.symbol.name), "main");
+
+    let result = symbol_map
+        .lookup_sync(LookupAddress::Relative(0x1a60))
+        .unwrap();
     assert_eq!(
-        symbol_map
-            .lookup_sync(LookupAddress::Relative(0x18a0))
-            .unwrap()
-            .symbol
-            .name,
-        "start"
-    );
-    assert_eq!(
-        symbol_map
-            .lookup_sync(LookupAddress::Relative(0x19ea))
-            .unwrap()
-            .symbol
-            .name,
-        "main"
-    );
-    assert_eq!(
-        symbol_map
-            .lookup_sync(LookupAddress::Relative(0x1a60))
-            .unwrap()
-            .symbol
-            .name,
+        symbol_map.resolve_symbol_name(result.symbol.name),
         "_libc_csu_init"
     );
 
@@ -509,27 +502,19 @@ fn example_linux() {
         symbol_map.debug_id(),
         DebugId::from_breakpad("BE4E976C325246EE9D6B7847A670B2A90").unwrap()
     );
-    assert_eq!(
-        &symbol_map
-            .lookup_sync(LookupAddress::Relative(0x1156))
-            .unwrap()
-            .symbol
-            .name,
-        "main"
-    );
+    let result = symbol_map
+        .lookup_sync(LookupAddress::Relative(0x1156))
+        .unwrap();
+    assert_eq!(symbol_map.resolve_symbol_name(result.symbol.name), "main");
     assert_eq!(
         symbol_map.lookup_sync(LookupAddress::Relative(0x1158)),
         None,
         "Gap between main and f"
     );
-    assert_eq!(
-        &symbol_map
-            .lookup_sync(LookupAddress::Relative(0x1160))
-            .unwrap()
-            .symbol
-            .name,
-        "f"
-    );
+    let result = symbol_map
+        .lookup_sync(LookupAddress::Relative(0x1160))
+        .unwrap();
+    assert_eq!(symbol_map.resolve_symbol_name(result.symbol.name), "f");
 }
 
 #[test]

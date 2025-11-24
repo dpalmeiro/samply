@@ -21,10 +21,8 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::Arc;
 
-use debugid::DebugId;
 use fxprof_processed_profile::Profile;
 use shared::ctrl_c::CtrlC;
 
@@ -32,7 +30,6 @@ use shared::ctrl_c::CtrlC;
 use linux::profiler;
 #[cfg(target_os = "macos")]
 use mac::profiler;
-use wholesym::{CodeId, LibraryInfo};
 #[cfg(target_os = "windows")]
 use windows::profiler;
 
@@ -246,14 +243,9 @@ fn run_server_serving_profile(
 
         let precog_path = profile_path.with_extension("syms.json");
         if let Some(precog_info) = shared::symbol_precog::PrecogSymbolInfo::try_load(&precog_path) {
-            for syms in precog_info.into_iter() {
-                let lib_info = LibraryInfo {
-                    debug_name: Some(syms.debug_name.clone()),
-                    debug_id: Some(DebugId::from_str(&syms.debug_id).unwrap()),
-                    code_id: CodeId::from_str(&syms.code_id).ok(),
-                    ..LibraryInfo::default()
-                };
-                symbol_manager.add_known_library_symbols(lib_info, Arc::new(syms));
+            for symbol_map in precog_info.into_iter() {
+                let lib_info = symbol_map.library_info();
+                symbol_manager.add_known_library_symbols(lib_info, Arc::new(symbol_map));
             }
         }
 

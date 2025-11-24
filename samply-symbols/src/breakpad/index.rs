@@ -508,9 +508,7 @@ impl BreakpadPublicSymbol {
     pub fn parse(input: &[u8]) -> Result<BreakpadPublicSymbolInfo<'_>, BreakpadParseError> {
         let (_rest, (_address, name)) =
             public_line(input).map_err(|_| BreakpadParseError::ParsingPublic)?;
-        Ok(BreakpadPublicSymbolInfo {
-            name: str::from_utf8(name).map_err(|_| BreakpadParseError::BadUtf8)?,
-        })
+        Ok(BreakpadPublicSymbolInfo { name })
     }
 }
 
@@ -571,7 +569,7 @@ impl BreakpadFuncSymbol {
             .sort_unstable_by_key(|inlinee| (inlinee.depth, inlinee.address));
 
         Ok(BreakpadFuncSymbolInfo {
-            name: str::from_utf8(name).map_err(|_| BreakpadParseError::BadUtf8)?,
+            name,
             size,
             line_index_range: (lines_start_index as u32, lines_end_index as u32),
             inlinee_index_range: (inlinees_start_index as u32, inlinees_end_index as u32),
@@ -862,12 +860,12 @@ pub enum BreakpadParseError {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BreakpadPublicSymbolInfo<'a> {
-    pub name: &'a str,
+    pub name: &'a [u8],
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct BreakpadFuncSymbolInfo<'a> {
-    pub name: &'a str,
+    pub name: &'a [u8],
     pub size: u32,
     pub line_index_range: (u32, u32),
     pub inlinee_index_range: (u32, u32),
@@ -1112,7 +1110,7 @@ fn parse_func_data_line(tokenizer: &mut Tokenizer) -> Result<SourceLine, ()> {
 }
 
 // Matches a FUNC record.
-fn func_line<'a>(tokenizer: &mut Tokenizer<'a>) -> Result<(u32, u32, &'a [u8]), ()> {
+pub fn func_line<'a>(tokenizer: &mut Tokenizer<'a>) -> Result<(u32, u32, &'a [u8]), ()> {
     tokenizer.consume_token(b"FUNC")?;
     tokenizer.consume_space1()?;
     if let Ok(()) = tokenizer.consume_token(b"m") {
@@ -1128,7 +1126,7 @@ fn func_line<'a>(tokenizer: &mut Tokenizer<'a>) -> Result<(u32, u32, &'a [u8]), 
     Ok((address, size, name))
 }
 
-struct Tokenizer<'a> {
+pub struct Tokenizer<'a> {
     input: &'a [u8],
 }
 
@@ -1313,7 +1311,7 @@ curity/sandbox/chromium/base/strings/safe_sprintf.cc:f150bc1f71d09e1e1941065951f
         let mut lines = Vec::new();
         let mut inlinees = Vec::new();
         let func = BreakpadFuncSymbol::parse(input, &mut lines, &mut inlinees).unwrap();
-        assert_eq!(func.name, "main");
+        assert_eq!(func.name, "main".as_bytes());
         assert_eq!(func.size, 0x28);
         assert_eq!(func.lines(&lines).len(), 4);
         assert_eq!(

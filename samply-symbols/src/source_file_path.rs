@@ -2,14 +2,14 @@ use std::borrow::Cow;
 
 use crate::{generation::SymbolMapGeneration, mapped_path::UnparsedMappedPath};
 
-/// A handle for a [`SourceFilePath`]. Can be resolved with the symbol map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceFilePathIndex(pub u32);
 
+/// A handle for a [`SourceFilePath`]. Can be resolved with the symbol map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceFilePathHandle {
-    generation: SymbolMapGeneration,
-    index: SourceFilePathIndex,
+    pub(crate) generation: SymbolMapGeneration,
+    pub(crate) index: SourceFilePathIndex,
 }
 
 /// The path of a source file, as found in the debug info.
@@ -104,15 +104,15 @@ impl<'a> SourceFilePath<'a> {
     }
 
     /// A variant of the path which may allow obtaining the source code for this file
-    /// from the web.
+    /// from the web. The return value
     ///
     /// Examples:
     ///
     ///   - If the source file is from a Rust dependency from crates.io, we detect the
-    ///     cargo cache directory in the raw path and create a mapped path of the form [`MappedPath::Cargo`].
+    ///     cargo cache directory in the raw path and create a mapped path of the form [`MappedPath::Cargo`](super::mapped_path::MappedPath::Cargo).
     ///   - If the source file can be obtained from a github URL, and we know this either
     ///     from the `srcsrv` stream of a PDB file or because we recognize a path of the
-    ///     form `/rustc/<rust-revision>/`, then we create a mapped path of the form [`MappedPath::Git`].
+    ///     form `/rustc/<rust-revision>/`, then we create a mapped path of the form [`MappedPath::Git`](super::mapped_path::MappedPath::Git).
     pub fn mapped_path(&self) -> UnparsedMappedPath<'_> {
         match self {
             SourceFilePath::RawPath(raw) => UnparsedMappedPath::RawPath(raw.clone()),

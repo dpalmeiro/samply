@@ -39,13 +39,12 @@ fn for_docs() {
             .await?;
         println!("Looking up 0xd6f4 in /usr/bin/ls. Results:");
         if let Some(address_info) = symbol_map.lookup(LookupAddress::Relative(0xd6f4)).await {
-            println!(
-                "Symbol: {:#x} {}",
-                address_info.symbol.address, address_info.symbol.name
-            );
+            let symbol_name = symbol_map.resolve_symbol_name(address_info.symbol.name);
+            println!("Symbol: {:#x} {}", address_info.symbol.address, symbol_name);
             if let Some(frames) = address_info.frames {
                 for (i, frame) in frames.into_iter().enumerate() {
-                    let function = frame.function.unwrap();
+                    let function_handle = frame.function.unwrap();
+                    let function = symbol_map.resolve_function_name(function_handle);
 
                     let file = symbol_map.resolve_source_file_path(frame.file_path.unwrap());
                     let path = file.display_path();
@@ -144,7 +143,10 @@ async fn dwz_symbolication() {
     };
 
     // Check information coming from the symbol table:
-    assert_eq!(&sym.symbol.name, "gobble_file.constprop.0");
+    assert_eq!(
+        symbol_map.resolve_symbol_name(sym.symbol.name),
+        "gobble_file.constprop.0"
+    );
     assert_eq!(sym.symbol.address, 0xd5d4);
     assert_eq!(sym.symbol.size, Some(0xebc));
 
@@ -163,8 +165,14 @@ async fn dwz_symbolication() {
     );
 
     // Check information coming from the supplementary file (coreutils.debug), found via absolute path in the debugaltlink:
-    assert_eq!(frames[0].function.as_ref().unwrap(), "do_lstat");
-    assert_eq!(frames[1].function.as_ref().unwrap(), "gobble_file");
+    assert_eq!(
+        symbol_map.resolve_function_name(frames[0].function.unwrap()),
+        "do_lstat"
+    );
+    assert_eq!(
+        symbol_map.resolve_function_name(frames[1].function.unwrap()),
+        "gobble_file"
+    );
 }
 
 mod simple_example {
@@ -189,12 +197,14 @@ mod simple_example {
             .lookup(LookupAddress::Relative(relative_address))
             .await
             .unwrap();
+        let symbol_name = symbol_map.resolve_symbol_name(address_info.symbol.name);
         let frames = address_info.frames.unwrap();
         let test_frames: Vec<_> = frames
             .iter()
             .map(|frame| {
+                let function_name = symbol_map.resolve_function_name(frame.function.unwrap());
                 (
-                    frame.function.as_deref().unwrap(),
+                    function_name.into_owned(),
                     symbol_map
                         .resolve_source_file_path(frame.file_path.unwrap())
                         .raw_path()
@@ -205,11 +215,11 @@ mod simple_example {
             .collect();
         let test_frames: Vec<_> = test_frames
             .iter()
-            .map(|(f, p, l)| (*f, p.as_str(), *l))
+            .map(|(f, p, l)| (f.as_str(), p.as_str(), *l))
             .collect();
         let test_address_info = TestAddressInfo {
             symbol: (
-                &address_info.symbol.name,
+                &symbol_name,
                 address_info.symbol.address,
                 address_info.symbol.size.unwrap(),
             ),

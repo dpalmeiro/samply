@@ -5,8 +5,9 @@ use std::sync::Arc;
 use debugid::DebugId;
 use samply_symbols::{
     self, AddressInfo, Error, ExternalFileAddressInFileRef, ExternalFileAddressRef, FrameDebugInfo,
-    LibraryInfo, LookupAddress, MultiArchDisambiguator, PathInterner, SourceFilePath,
-    SourceFilePathHandle, SymbolMapTrait, SyncAddressInfo,
+    FunctionNameHandle, LibraryInfo, LookupAddress, MultiArchDisambiguator, SourceFilePath,
+    SourceFilePathHandle, SymbolMapStringInterner, SymbolMapTrait, SymbolNameHandle,
+    SyncAddressInfo,
 };
 
 use crate::config::SymbolManagerConfig;
@@ -130,6 +131,14 @@ impl SymbolMap {
     pub fn resolve_source_file_path(&self, handle: SourceFilePathHandle) -> SourceFilePath<'_> {
         self.0.resolve_source_file_path(handle)
     }
+
+    pub fn resolve_function_name(&self, handle: FunctionNameHandle) -> Cow<'_, str> {
+        self.0.resolve_function_name(handle)
+    }
+
+    pub fn resolve_symbol_name(&self, handle: SymbolNameHandle) -> Cow<'_, str> {
+        self.0.resolve_symbol_name(handle)
+    }
 }
 
 pub struct ExternalFileSymbolMap(samply_symbols::ExternalFileSymbolMap<WholesymFileContents>);
@@ -145,9 +154,9 @@ impl ExternalFileSymbolMap {
     pub fn lookup(
         &self,
         external_file_address: &ExternalFileAddressInFileRef,
-        path_interner: &mut PathInterner,
+        string_interner: &mut SymbolMapStringInterner,
     ) -> Option<Vec<FrameDebugInfo>> {
-        self.0.lookup(external_file_address, path_interner)
+        self.0.lookup(external_file_address, string_interner)
     }
 }
 
