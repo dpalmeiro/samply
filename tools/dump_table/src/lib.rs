@@ -120,7 +120,7 @@ type FileContentsType = samply_symbols::FileContentsWithChunkedCaching<MmapFileC
 
 #[cfg(feature = "chunked_caching")]
 fn mmap_to_file_contents(mmap: memmap2::Mmap) -> FileContentsType {
-    samply_symbols::FileContentsWithChunkedCaching::new(mmap.len() as u64, MmapFileContents(mmap))
+    samply_symbols::FileContentsWithChunkedCaching::new(mmap.len(), MmapFileContents(mmap))
 }
 
 #[cfg(not(feature = "chunked_caching"))]
