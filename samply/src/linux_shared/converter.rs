@@ -59,6 +59,8 @@ use crate::shared::unresolved_samples::{
 };
 use crate::shared::utils::open_file_with_fallback;
 
+const PROT_EXEC: u32 = 0b100;
+
 pub struct Converter<U>
 where
     U: Unwinder<Module = Module<MmapRangeOrVec>> + Default,
@@ -700,54 +702,39 @@ where
     }
 
     pub fn handle_mmap(&mut self, e: MmapRecord, timestamp: u64) {
-        let mut path = e.path.as_slice();
-        self.add_mmap_marker(e.pid, e.tid, &path, timestamp);
-
-        if self.check_jitdump_or_marker_file(&path, e.pid, e.tid) {
-            // Not a DSO.
-            return;
-        }
-
-        if e.page_offset == 0 {
-            self.pe_mappings.check_mmap(&path, e.address);
-        }
-
-        if !e.is_executable {
-            return;
-        }
-
-        let dso_key = match DsoKey::detect(&path, e.cpu_mode) {
-            Some(dso_key) => dso_key,
-            None => return,
-        };
-        let mut build_id = None;
-        if let Some(dso_info) = self.build_ids.get(&dso_key) {
-            build_id = Some(dso_info.build_id.to_owned());
-            // Overwrite the path from the mmap record with the path from the build ID info.
-            // These paths are usually the same, but in some cases the path from the build
-            // ID info can be "better". For example, the synthesized mmap event for the
-            // kernel vmlinux image usually has "[kernel.kallsyms]_text" whereas the build
-            // ID info might have the full path to a kernel debug file, e.g.
-            // "/usr/lib/debug/boot/vmlinux-4.16.0-1-amd64".
-            path = dso_info.path.to_owned().into();
-        }
-
-        if e.pid == -1 {
-            self.add_kernel_module(e.address, e.length, dso_key, build_id.as_deref(), &path);
-        } else {
-            self.add_module_to_process(
-                e.pid,
-                &path,
-                e.page_offset,
-                e.address,
-                e.length,
-                build_id.as_deref(),
-                timestamp,
-            );
-        }
+        let MmapRecord {
+            pid,
+            tid,
+            address,
+            length,
+            page_offset,
+            is_executable,
+            cpu_mode,
+            path,
+        } = e;
+        self.handle_mmap_inner(
+            Mmap2Record {
+                pid,
+                tid,
+                address,
+                length,
+                page_offset,
+                file_id: Mmap2FileId::BuildId(vec![]),
+                protection: if is_executable { PROT_EXEC } else { 0 },
+                flags: 0,
+                cpu_mode,
+                path,
+            },
+            timestamp,
+            false,
+        );
     }
 
     pub fn handle_mmap2(&mut self, e: Mmap2Record, timestamp: u64) {
+        self.handle_mmap_inner(e, timestamp, true);
+    }
+
+    fn handle_mmap_inner(&mut self, e: Mmap2Record, timestamp: u64, v2: bool) {
         let path = e.path.as_slice();
         self.add_mmap_marker(e.pid, e.tid, &path, timestamp);
 
@@ -766,12 +753,18 @@ where
             self.pe_mappings.check_mmap(&path, e.address);
         }
 
-        const PROT_EXEC: u32 = 0b100;
-        if e.protection & PROT_EXEC == 0 && !self.simpleperf.symbol_tables.user.contains_key(&*path)
+        let Some(dso_key) = DsoKey::detect(&path, e.cpu_mode) else {
+            return;
+        };
+
+        if matches!(dso_key, DsoKey::User { .. })
+            && e.protection & PROT_EXEC == 0
+            && !self.simpleperf.symbol_tables.user.contains_key(&*path)
         {
-            // Ignore non-executable mappings.
+            // Ignore non-executable user mappings.
             // Don't ignore mappings that simpleperf found symbols for, even if they're
-            // non-executable. TODO: Find out why .vdex and .jar mappings with symbols aren't
+            // non-executable.
+            // TODO: Find out why .vdex and .jar mappings with symbols aren't
             // marked as executable in the simpleperf perf.data files. Is simpleperf simply
             // forgetting to set the right flag? Or are these mappings synthetic? Are we
             // actually running code from inside these mappings? Surely then the memory must
@@ -779,28 +772,45 @@ where
             return;
         }
 
-        let build_id = match &e.file_id {
-            Mmap2FileId::BuildId(build_id) => Some(build_id.to_owned()),
-            Mmap2FileId::InodeAndVersion(_) => {
-                let dso_key = match DsoKey::detect(&path, e.cpu_mode) {
-                    Some(dso_key) => dso_key,
-                    None => return,
-                };
-                self.build_ids
-                    .get(&dso_key)
-                    .map(|db| db.build_id.to_owned())
+        let inline_build_id = if v2 {
+            match &e.file_id {
+                Mmap2FileId::BuildId(build_id) => Some(build_id.as_slice()),
+                Mmap2FileId::InodeAndVersion(_) => None,
             }
+        } else {
+            None
         };
 
-        self.add_module_to_process(
-            e.pid,
-            &path,
-            e.page_offset,
-            e.address,
-            e.length,
-            build_id.as_deref(),
-            timestamp,
-        );
+        // Get build_id and potentially override path from build_ids map.
+        // These paths are usually the same, but in some cases the path from the build
+        // ID info can be "better". For example, the synthesized mmap event for the
+        // kernel vmlinux image usually has "[kernel.kallsyms]_text" whereas the build
+        // ID info might have the full path to a kernel debug file, e.g.
+        // "/usr/lib/debug/boot/vmlinux-4.16.0-1-amd64".
+        let (build_id, path) = match inline_build_id {
+            Some(build_id) => (Some(build_id.to_owned()), path),
+            None => match self.build_ids.get(&dso_key) {
+                Some(dso_info) => (
+                    Some(dso_info.build_id.to_owned()),
+                    dso_info.path.to_owned().into(),
+                ),
+                None => (None, path),
+            },
+        };
+
+        if e.pid == -1 {
+            self.add_kernel_module(e.address, e.length, dso_key, build_id.as_deref(), &path);
+        } else {
+            self.add_module_to_process(
+                e.pid,
+                &path,
+                e.page_offset,
+                e.address,
+                e.length,
+                build_id.as_deref(),
+                timestamp,
+            );
+        }
     }
 
     fn check_jitdump_or_marker_file(&mut self, path: &[u8], pid: i32, tid: i32) -> bool {
