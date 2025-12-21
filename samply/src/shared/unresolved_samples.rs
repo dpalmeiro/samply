@@ -1,6 +1,9 @@
 use std::collections::hash_map::Entry;
+use std::collections::BTreeMap;
 
 use fxprof_processed_profile::{CpuDelta, FrameHandle, MarkerHandle, ThreadHandle, Timestamp};
+use rustc_hash::FxBuildHasher;
+use schnellru::{ByLength, LruMap};
 
 use super::types::{FastHashMap, StackFrame, StackMode};
 
@@ -154,7 +157,7 @@ pub struct SampleData {
     pub weight: i32,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnresolvedStackHandle(u32);
 
 impl UnresolvedStackHandle {
@@ -162,10 +165,36 @@ impl UnresolvedStackHandle {
     pub const EMPTY: Self = Self(u32::MAX);
 }
 
-#[derive(Debug, Clone, Default)]
+/// An interner that recursively interns stacks in the form of (prefix, frame).
+///
+/// The interner avoids the worst case O(n) runtime behavior of hash maps due to rehashes. Under the
+/// hood, BTreeMap is used to store the full mapping with worst case O(log n) inserts, while an LRU
+/// hash map maintains a O(1) fast path for the majority of accesses.
 pub struct UnresolvedStacks {
     pub stacks: Vec<(UnresolvedStackHandle, StackFrame)>, // (prefix, frame)
-    pub stack_lookup: FastHashMap<(UnresolvedStackHandle, StackFrame), UnresolvedStackHandle>, // (prefix, frame) -> stack index
+    stack_lookup: BTreeMap<(UnresolvedStackHandle, StackFrame), UnresolvedStackHandle>, // (prefix, frame) -> stack index
+    stack_cache:
+        LruMap<(UnresolvedStackHandle, StackFrame), UnresolvedStackHandle, ByLength, FxBuildHasher>,
+}
+
+impl UnresolvedStacks {
+    // Two things to consider for the size of table:
+    // - The cache should be small enough to fit in CPU cache
+    // - LruMap uses SwissTable under the hood where erases use tombstones and rehashing is required
+    //   for compaction. The cache should be small enough to bound rehashing cost
+    //
+    // Assuming 64B per entry, a 256KB L2 can fit 4K entries, and rehashing time seems to be under 1ms.
+    const CACHE_SIZE: u32 = 4096;
+}
+
+impl Default for UnresolvedStacks {
+    fn default() -> Self {
+        Self {
+            stacks: Vec::new(),
+            stack_cache: LruMap::with_hasher(ByLength::new(Self::CACHE_SIZE), FxBuildHasher),
+            stack_lookup: BTreeMap::new(),
+        }
+    }
 }
 
 impl UnresolvedStacks {
@@ -182,11 +211,17 @@ impl UnresolvedStacks {
     ) -> UnresolvedStackHandle {
         for frame in frames {
             let x = (prefix, frame);
+            if let Some(node) = self.stack_cache.get(&x).copied() {
+                prefix = node;
+                continue;
+            }
+
             let node = *self.stack_lookup.entry(x).or_insert_with(|| {
                 let new_index = self.stacks.len() as u32;
                 self.stacks.push(x);
                 UnresolvedStackHandle(new_index)
             });
+            self.stack_cache.insert(x, node);
             prefix = node;
         }
         prefix
@@ -198,17 +233,10 @@ impl UnresolvedStacks {
         &mut self,
         frames: impl Iterator<Item = StackFrame>,
     ) -> UnresolvedStackHandle {
-        let mut prefix = UnresolvedStackHandle::EMPTY;
-        for frame in frames.filter(|f| f.stack_mode() != Some(StackMode::Kernel)) {
-            let x = (prefix, frame);
-            let node = *self.stack_lookup.entry(x).or_insert_with(|| {
-                let new_index = self.stacks.len() as u32;
-                self.stacks.push(x);
-                UnresolvedStackHandle(new_index)
-            });
-            prefix = node;
-        }
-        prefix
+        self.convert_with_prefix(
+            UnresolvedStackHandle::EMPTY,
+            frames.filter(|f| f.stack_mode() != Some(StackMode::Kernel)),
+        )
     }
 
     // Appends the stack to `buf`, starting with the callee-most frame.
