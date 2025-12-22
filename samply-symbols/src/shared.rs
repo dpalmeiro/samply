@@ -1,5 +1,3 @@
-#[cfg(feature = "partial_read_stats")]
-use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::future::Future;
 use std::marker::PhantomData;
@@ -624,7 +622,7 @@ impl FileReadStats {
             }
             self.read_call_count += 1;
         }
-        chunkbits.set_all(true);
+        chunkbits.fill(true);
     }
 
     pub fn unique_bytes_read(&self) -> u64 {
@@ -744,7 +742,7 @@ impl<T: FileContents> FileContentsWrapper<T> {
 #[cfg(feature = "partial_read_stats")]
 impl<T: FileContents> Drop for FileContentsWrapper<T> {
     fn drop(&mut self) {
-        eprintln!("{}", self.partial_read_stats.lock());
+        eprintln!("{}", *self.partial_read_stats.lock().unwrap());
     }
 }
 
