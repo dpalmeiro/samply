@@ -7,7 +7,7 @@ use linux_perf_event_reader::CpuMode;
 
 pub type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StackMode {
     User,
     Kernel,
@@ -37,7 +37,7 @@ impl From<CpuMode> for StackMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StackFrame {
     InstructionPointer(u64, StackMode),
     ReturnAddress(u64, StackMode),
